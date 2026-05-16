@@ -1,6 +1,8 @@
 use axum::http::header;
 use axum::response::IntoResponse;
 
+const FAVICON_SVG: &str = include_str!("../../../public/favicon.svg");
+
 const ROBOTS_TXT: &str = "User-agent: *
 Disallow: /admin
 Disallow: /admin/
@@ -32,4 +34,8 @@ pub async fn robots_txt() -> impl IntoResponse {
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
         ROBOTS_TXT,
     )
+}
+
+pub async fn favicon() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "image/svg+xml")], FAVICON_SVG)
 }

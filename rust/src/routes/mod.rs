@@ -171,6 +171,8 @@ pub fn router() -> Router<AppState> {
         .route("/permissions", get(pages::permissions))
         // Crawler policy + indexer surface
         .route("/robots.txt", get(static_routes::robots_txt))
+        .route("/favicon.ico", get(static_routes::favicon))
+        .route("/favicon.svg", get(static_routes::favicon))
         .route("/sitemap.xml", get(feeds::sitemap))
         .route("/sitemap.xsl", get(feeds::sitemap_xsl))
         // OAI-PMH metadata-harvest endpoint (Dublin Core).
