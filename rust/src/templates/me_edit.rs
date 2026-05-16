@@ -7,16 +7,26 @@ use crate::routes::me_edit::EditValues;
 // attempt — `(message, is_error)`, or None when nothing's fresh.
 // Rendered inside the verification status panel so users don't
 // have to scroll back up to discover what happened.
+pub struct VerificationUi<'a> {
+    pub github_flash: Option<(&'a str, bool)>,
+    pub github_oauth_unavailable: Option<&'a str>,
+    pub orcid_flash: Option<(&'a str, bool)>,
+    pub orcid_oauth_unavailable: Option<&'a str>,
+}
+
 pub fn render(
     ctx: &PageCtx,
     v: &EditValues,
     errors: &[String],
     pending_new_email: Option<&str>,
-    github_flash: Option<(&str, bool)>,
-    github_oauth_unavailable: Option<&str>,
-    orcid_flash: Option<(&str, bool)>,
-    orcid_oauth_unavailable: Option<&str>,
+    verification: VerificationUi<'_>,
 ) -> Markup {
+    let VerificationUi {
+        github_flash,
+        github_oauth_unavailable,
+        orcid_flash,
+        orcid_oauth_unavailable,
+    } = verification;
     let user = ctx.user.as_ref();
     let username = user.map(|u| u.username.as_str()).unwrap_or("");
     let email = user.map(|u| u.email.as_str()).unwrap_or("");

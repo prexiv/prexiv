@@ -8,7 +8,7 @@ use crate::auth::{
     verify_password_timing_safe, MaybeUser,
 };
 use crate::error::AppResult;
-use crate::helpers::{build_ctx, set_flash};
+use crate::helpers::{build_ctx, set_flash, set_session_secret};
 use crate::state::AppState;
 use crate::templates::{self, auth::RegisterForm};
 use crate::verify;
@@ -283,7 +283,7 @@ pub async fn do_register(
 
     if crate::email::inline_token_fallback_enabled() {
         if let Some(t) = pending_token {
-            let _ = session.insert("pending_verify_token", t).await;
+            set_session_secret(&session, "pending_verify_token", &t).await;
         }
     }
 

@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
-use crate::api_auth::{generate_token, hash_token, ApiUser, ApiVerifiedUser};
+use crate::api_auth::{generate_token, hash_token, token_display_prefix, ApiUser, ApiVerifiedUser};
 use crate::models::{Manuscript, ManuscriptListItem};
 use crate::state::AppState;
 
@@ -124,15 +124,15 @@ async fn get_me(ApiUser(u): ApiUser) -> Json<Value> {
 // ─── /me/tokens ────────────────────────────────────────────────────────────
 
 async fn list_tokens(State(state): State<AppState>, ApiUser(u): ApiUser) -> ApiResult<Json<Value>> {
-    let rows: Vec<(i64, Option<String>, Option<chrono::NaiveDateTime>, Option<chrono::NaiveDateTime>, Option<chrono::NaiveDateTime>)> =
-        sqlx::query_as(crate::db::pg("SELECT id, name, last_used_at, created_at, expires_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC"))
+    let rows: Vec<(i64, Option<String>, Option<String>, Option<chrono::NaiveDateTime>, Option<chrono::NaiveDateTime>, Option<chrono::NaiveDateTime>)> =
+        sqlx::query_as(crate::db::pg("SELECT id, token_prefix, name, last_used_at, created_at, expires_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC"))
             .bind(u.id)
             .fetch_all(&state.pool)
             .await?;
     let items: Vec<Value> = rows
         .into_iter()
-        .map(|(id, name, last_used_at, created_at, expires_at)| {
-            json!({"id": id, "name": name, "last_used_at": last_used_at, "created_at": created_at, "expires_at": expires_at})
+        .map(|(id, token_prefix, name, last_used_at, created_at, expires_at)| {
+            json!({"id": id, "token_prefix": token_prefix, "name": name, "last_used_at": last_used_at, "created_at": created_at, "expires_at": expires_at})
         })
         .collect();
     Ok(Json(json!({"items": items})))
@@ -154,25 +154,41 @@ async fn create_token(
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let plain = generate_token();
     let hash = hash_token(&plain);
+    let prefix = token_display_prefix(&plain);
     let expires_at: Option<chrono::NaiveDateTime> = body
         .expires_in_days
         .filter(|d| *d > 0)
         .map(|d| (chrono::Utc::now() + chrono::Duration::days(d)).naive_utc());
 
     let (token_id,): (i64,) = sqlx::query_as(
-        crate::db::pg("INSERT INTO api_tokens (user_id, token_hash, name, expires_at) VALUES (?, ?, ?, ?) RETURNING id"),
+        crate::db::pg("INSERT INTO api_tokens (user_id, token_hash, token_prefix, name, expires_at) VALUES (?, ?, ?, ?, ?) RETURNING id"),
     )
     .bind(u.id)
     .bind(&hash)
+    .bind(&prefix)
     .bind(body.name.as_deref())
     .bind(expires_at)
     .fetch_one(&state.pool)
     .await?;
+    let _ = sqlx::query(crate::db::pg(
+        "INSERT INTO audit_log (actor_user_id, action, target_type, target_id, detail) VALUES (?, 'api_token_mint', 'api_token', ?, ?)",
+    ))
+    .bind(u.id)
+    .bind(token_id)
+    .bind(serde_json::json!({
+        "token_prefix": prefix.as_str(),
+        "name": body.name.as_deref(),
+        "expires_at": expires_at,
+        "surface": "api"
+    }).to_string())
+    .execute(&state.pool)
+    .await;
 
     Ok((
         StatusCode::CREATED,
         Json(json!({
             "id": token_id,
+            "token_prefix": prefix,
             "name": body.name,
             "token": plain,
             "warning": "Save this token now — it will never be shown again. Treat it like a password.",
@@ -186,18 +202,32 @@ async fn revoke_token(
     ApiUser(u): ApiUser,
     Path(id): Path<i64>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
-    let res = sqlx::query(crate::db::pg(
-        "DELETE FROM api_tokens WHERE id = ? AND user_id = ?",
+    let deleted: Option<(Option<String>, Option<String>)> = sqlx::query_as(crate::db::pg(
+        "DELETE FROM api_tokens WHERE id = ? AND user_id = ? RETURNING token_prefix, name",
     ))
     .bind(id)
     .bind(u.id)
-    .execute(&state.pool)
+    .fetch_optional(&state.pool)
     .await?;
-    if res.rows_affected() == 0 {
+    if deleted.is_none() {
         return Ok((
             StatusCode::NOT_FOUND,
             Json(json!({"ok": false, "error": "no such token"})),
         ));
+    }
+    if let Some((token_prefix, name)) = deleted {
+        let _ = sqlx::query(crate::db::pg(
+            "INSERT INTO audit_log (actor_user_id, action, target_type, target_id, detail) VALUES (?, 'api_token_revoke', 'api_token', ?, ?)",
+        ))
+        .bind(u.id)
+        .bind(id)
+        .bind(serde_json::json!({
+            "token_prefix": token_prefix,
+            "name": name,
+            "surface": "api"
+        }).to_string())
+        .execute(&state.pool)
+        .await;
     }
     Ok((StatusCode::OK, Json(json!({"ok": true, "deleted_id": id}))))
 }

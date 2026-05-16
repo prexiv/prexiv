@@ -86,6 +86,6 @@
   }
 
   // Re-render any subtree the page wants to typeset later (e.g. after AJAX).
-  // Usage from app.js: window.preXivRenderMath(el)
+  // Usage from page scripts: window.preXivRenderMath(el)
   window.preXivRenderMath = tryRender;
 })();

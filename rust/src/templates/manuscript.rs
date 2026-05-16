@@ -7,6 +7,8 @@ use crate::models::Manuscript;
 
 use super::layout::{external_link, layout, time_ago, PageCtx};
 
+pub type SubmitterTrustRow = (String, Option<String>, i64, i64, i64, i64);
+
 fn md(s: &str) -> PreEscaped<String> {
     PreEscaped(markdown::render(s))
 }
@@ -35,7 +37,7 @@ pub fn render(
     ctx: &PageCtx,
     m: &Manuscript,
     comments: &[CommentWithAuthor],
-    submitter: Option<&(String, Option<String>, i64, i64, i64, i64)>,
+    submitter: Option<&SubmitterTrustRow>,
     cats: &[(String, i64)],
     my_vote: i64,
 ) -> Markup {

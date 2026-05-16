@@ -24,7 +24,7 @@ use tower_sessions::Session;
 use crate::auth::{verify_csrf, verify_password_timing_safe, MaybeUser, RequireUser};
 use crate::email_change;
 use crate::error::AppResult;
-use crate::helpers::{build_ctx, set_flash};
+use crate::helpers::{build_ctx, clear_session_secret, set_flash, set_session_secret};
 use crate::state::AppState;
 use crate::templates;
 use crate::templates::layout::layout;
@@ -145,9 +145,7 @@ pub async fn submit(
     // token fallback is dev-only unless explicitly enabled.
     if crate::email::inline_token_fallback_enabled() {
         if let Some(t) = &token {
-            let _ = session
-                .insert("pending_email_change_token", t.clone())
-                .await;
+            set_session_secret(&session, "pending_email_change_token", t).await;
         }
     }
 
@@ -175,8 +173,8 @@ pub async fn confirm(
         Ok(Some((token_id, user_id, new_email))) => {
             match email_change::consume_and_apply(&state.pool, token_id, user_id, &new_email).await {
                 Ok(true) => {
-                    let _ = session.remove::<String>("pending_email_change_token").await;
-                    let _ = session.remove::<String>("pending_verify_token").await;
+                    clear_session_secret(&session, "pending_email_change_token").await;
+                    clear_session_secret(&session, "pending_verify_token").await;
                     (
                         true,
                         "Email updated",
@@ -237,7 +235,7 @@ pub async fn cancel(
         return Ok(Redirect::to("/me/edit").into_response());
     }
     let _ = email_change::invalidate_for_user(&state.pool, user.id).await;
-    let _ = session.remove::<String>("pending_email_change_token").await;
+    clear_session_secret(&session, "pending_email_change_token").await;
     set_flash(&session, "Pending email change cancelled.").await;
     Ok(Redirect::to("/me/edit").into_response())
 }

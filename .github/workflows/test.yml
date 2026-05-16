@@ -10,84 +10,115 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  smoke:
+  rust:
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
-
-    env:
-      PORT: "3000"
-      SESSION_SECRET: ci
-      ADMIN_USERNAMES: eulerine,noether42
+    timeout-minutes: 20
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Format
+        run: cargo fmt --check
+        working-directory: rust
+
+      - name: Test
+        run: cargo test
+        working-directory: rust
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: rust
+
+      - name: Release build
+        run: cargo build --release
+        working-directory: rust
+
+  mcp:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: prexiv
+          POSTGRES_PASSWORD: prexiv
+          POSTGRES_DB: prexiv_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://prexiv:prexiv@127.0.0.1:5432/prexiv_test
+      PREXIV_DATA_KEY: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+      DATA_DIR: /tmp/prexiv-data
+      UPLOAD_DIR: /tmp/prexiv-data/uploads
+      APP_URL: http://localhost:3000
+      PORT: "3000"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Set up Node 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
         with:
-          python-version: "3.12"
+          workspaces: rust
 
-      - name: Cache root node_modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-node-root-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-root-
-
-      - name: Cache mcp/node_modules
-        uses: actions/cache@v4
-        with:
-          path: mcp/node_modules
-          key: ${{ runner.os }}-node-mcp-${{ hashFiles('mcp/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-node-mcp-
-
-      - name: Install root deps
-        run: npm ci
-
-      - name: Install mcp deps
+      - name: Install MCP deps
         run: npm ci
         working-directory: mcp
 
-      - name: Reset DB
-        run: |
-          rm -f data/*.db data/*.db-shm data/*.db-wal
-          node seed.js
+      - name: Build Rust server
+        run: cargo build --release
+        working-directory: rust
 
-      - name: Start server in background
+      - name: Start Rust server
         run: |
-          node server.js > server.log 2>&1 &
+          mkdir -p "$UPLOAD_DIR"
+          ./rust/target/release/prexiv > server.log 2>&1 &
           echo "SERVER_PID=$!" >> "$GITHUB_ENV"
 
-      - name: Wait for /healthz
+      - name: Wait for readiness
         run: |
           for i in $(seq 1 60); do
-            if curl -sS -f -o /dev/null http://localhost:3000/healthz; then
-              echo "server is up after ${i}s"
+            if curl -sS -f -o /dev/null http://localhost:3000/readyz; then
+              echo "server is ready after ${i}s"
               exit 0
             fi
             sleep 1
           done
-          echo "server did not come up in 60s"
-          echo "--- server.log tail ---"
+          echo "server did not become ready"
           tail -n 200 server.log || true
           exit 1
 
-      - name: Run REST API tests
-        run: python3 tests/prexiv_api_test.py
+      - name: MCP syntax check
+        run: npm run check
+        working-directory: mcp
 
-      - name: Run MCP tests
-        run: python3 tests/prexiv_mcp_test.py
-
-      - name: Run safety tests
-        run: python3 tests/prexiv_safety_test.py
+      - name: MCP live smoke test
+        run: BASE=http://localhost:3000/api/v1 python3 tests/prexiv_mcp_test.py
 
       - name: Stop server
         if: always()

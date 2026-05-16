@@ -55,10 +55,12 @@ pub async fn show(
             &values,
             &[],
             pending_email.as_deref(),
-            github_flash.as_ref().map(|(m, e)| (m.as_str(), *e)),
-            github_oauth_unavailable.as_deref(),
-            orcid_flash.as_ref().map(|(m, e)| (m.as_str(), *e)),
-            orcid_oauth_unavailable.as_deref(),
+            templates::me_edit::VerificationUi {
+                github_flash: github_flash.as_ref().map(|(m, e)| (m.as_str(), *e)),
+                github_oauth_unavailable: github_oauth_unavailable.as_deref(),
+                orcid_flash: orcid_flash.as_ref().map(|(m, e)| (m.as_str(), *e)),
+                orcid_oauth_unavailable: orcid_oauth_unavailable.as_deref(),
+            },
         )
         .into_string(),
     ))
@@ -122,10 +124,12 @@ pub async fn submit(
                 &values,
                 &errors,
                 pending_email.as_deref(),
-                None,
-                github_oauth_unavailable.as_deref(),
-                None,
-                orcid_oauth_unavailable.as_deref(),
+                templates::me_edit::VerificationUi {
+                    github_flash: None,
+                    github_oauth_unavailable: github_oauth_unavailable.as_deref(),
+                    orcid_flash: None,
+                    orcid_oauth_unavailable: orcid_oauth_unavailable.as_deref(),
+                },
             )
             .into_string(),
         )

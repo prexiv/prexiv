@@ -2,8 +2,9 @@
 //!
 //! Token format: `prexiv_` + 36 base64url chars (27 random bytes), exactly
 //! matching the JS app's `generateToken()`. Stored as SHA-256 hex in
-//! `api_tokens.token_hash`; the plaintext is shown to the caller exactly
-//! once at creation and never persisted.
+//! `api_tokens.token_hash`; only a short display prefix is stored beside the
+//! hash. The plaintext is shown to the caller exactly once at creation and
+//! never persisted.
 //!
 //! `ApiUser` is an axum extractor that pulls the bearer from the
 //! `Authorization` header, looks the hash up, honours `expires_at`, and
@@ -25,6 +26,7 @@ use crate::models::User;
 use crate::state::AppState;
 
 pub const TOKEN_PREFIX: &str = "prexiv_";
+const DISPLAY_PREFIX_CHARS: usize = 14;
 
 /// Mint a fresh API token. Plaintext only — caller must hash with
 /// `hash_token` before storing in the DB.
@@ -40,6 +42,22 @@ pub fn hash_token(plain: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(plain.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+/// Short non-secret identifier for UI lists and audit logs.
+pub fn token_display_prefix(plain: &str) -> String {
+    plain.chars().take(DISPLAY_PREFIX_CHARS).collect()
+}
+
+/// Detect accidental API-token placement in URLs. Bearer tokens must travel in
+/// the Authorization header because URLs are routinely captured in browser
+/// history, reverse-proxy logs, Referer headers, and screenshots.
+pub fn bearer_token_in_query(parts: &Parts) -> bool {
+    parts
+        .uri
+        .query()
+        .map(|q| q.contains(TOKEN_PREFIX))
+        .unwrap_or(false)
 }
 
 pub enum BearerToken {
@@ -137,6 +155,16 @@ where
         let app: AppState = AppState::from_ref(state);
         let plain = match extract_bearer(parts) {
             BearerToken::Present(t) => t,
+            BearerToken::Missing if bearer_token_in_query(parts) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "bearer tokens are not accepted in URLs",
+                        "hint": "send `Authorization: Bearer prexiv_…`; never put an API token in a query string"
+                    })),
+                )
+                    .into_response());
+            }
             BearerToken::Missing | BearerToken::Malformed => {
                 return Err((
                     StatusCode::UNAUTHORIZED,
@@ -181,6 +209,53 @@ where
                 })),
             )
                 .into_response())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+
+    #[test]
+    fn generated_tokens_store_only_hash_and_display_prefix() {
+        let token = generate_token();
+        let hash = hash_token(&token);
+        let prefix = token_display_prefix(&token);
+
+        assert!(token.starts_with(TOKEN_PREFIX));
+        assert_ne!(hash, token);
+        assert_eq!(hash.len(), 64);
+        assert!(token.starts_with(&prefix));
+        assert!(prefix.len() < token.len());
+    }
+
+    #[test]
+    fn bearer_extraction_ignores_query_tokens() {
+        let (parts, _) = Request::builder()
+            .uri("/api/v1/me?access_token=prexiv_leaked")
+            .body(Body::empty())
+            .unwrap()
+            .into_parts();
+
+        assert!(bearer_token_in_query(&parts));
+        assert!(matches!(extract_bearer(&parts), BearerToken::Missing));
+    }
+
+    #[test]
+    fn bearer_extraction_accepts_authorization_header() {
+        let (parts, _) = Request::builder()
+            .uri("/api/v1/me")
+            .header(header::AUTHORIZATION, "Bearer prexiv_abc")
+            .body(Body::empty())
+            .unwrap()
+            .into_parts();
+
+        match extract_bearer(&parts) {
+            BearerToken::Present(token) => assert_eq!(token, "prexiv_abc"),
+            _ => panic!("expected bearer token"),
         }
     }
 }

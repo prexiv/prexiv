@@ -1,0 +1,2 @@
+ALTER TABLE webhooks
+  ADD COLUMN IF NOT EXISTS secret_enc BYTEA;

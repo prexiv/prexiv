@@ -45,6 +45,8 @@ mod versions;
 
 use crate::state::AppState;
 
+type InstitutionalEmailBackfillRow = (i64, Option<String>, Option<Vec<u8>>, i64);
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let env_filter = EnvFilter::try_from_default_env()
@@ -91,6 +93,24 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!(
             "identity-signal backfill: tagged {inst_set} users with institutional_email=1"
         );
+    }
+    let totp_migrated = backfill_legacy_totp(&pool)
+        .await
+        .context("backfilling legacy users.totp_secret into user_totp")?;
+    if totp_migrated > 0 {
+        tracing::info!("S-7 backfill: encrypted {totp_migrated} legacy TOTP secrets");
+    }
+    let webhook_secrets_migrated = backfill_webhook_secrets(&pool)
+        .await
+        .context("backfilling webhook.secret into webhook.secret_enc")?;
+    if webhook_secrets_migrated > 0 {
+        tracing::info!("S-7 backfill: encrypted {webhook_secrets_migrated} webhook secrets");
+    }
+    let scrubbed = scrub_legacy_secret_columns(&pool)
+        .await
+        .context("scrubbing legacy plaintext user-secret columns")?;
+    if scrubbed > 0 {
+        tracing::info!("S-7 scrub: removed {scrubbed} legacy plaintext user-secret values");
     }
 
     // Session store — shares the same DB so we don't need a second file.
@@ -239,7 +259,15 @@ async fn main() -> anyhow::Result<()> {
             },
         ))
         .layer(CompressionLayer::new())
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<_>| {
+                tracing::debug_span!(
+                    "http_request",
+                    method = %request.method(),
+                    path = %request.uri().path()
+                )
+            }),
+        )
         .layer(session_layer)
         .with_state(state);
 
@@ -262,30 +290,32 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// S-7 startup pass: encrypt the plaintext `email` column for any
-/// user row whose `email_hash` is still NULL. Returns the number of
-/// rows updated. Idempotent — running it twice does nothing the
-/// second time. Skips rows with an empty `email` (which is what an
-/// operator-level "hard zero the plaintext" pass produces; we don't
-/// want to re-encrypt empty strings on top of a legitimate ciphertext).
-/// One-time pass that flips `institutional_email = 1` for any row
-/// whose plaintext email (still populated during the S-7 rollout) is
-/// on the institutional-domain allowlist AND whose email has been
-/// verified. Idempotent — the `WHERE institutional_email = 0` guard
-/// means re-running this on every startup costs one cheap scan.
+/// One-time pass that flips `institutional_email = 1` for any verified row
+/// whose email is on the institutional-domain allowlist. Reads from
+/// `email_enc` when available and falls back to the legacy plaintext column
+/// only for rows that have not yet been encrypted.
 async fn backfill_institutional_email(pool: &crate::db::DbPool) -> anyhow::Result<usize> {
-    let rows: Vec<(i64, Option<String>, i64)> = sqlx::query_as(crate::db::pg(
-        "SELECT id, email, email_verified FROM users
-          WHERE institutional_email = 0 AND email IS NOT NULL AND email <> ''",
+    let rows: Vec<InstitutionalEmailBackfillRow> = sqlx::query_as(crate::db::pg(
+        "SELECT id, email, email_enc, email_verified FROM users
+          WHERE institutional_email = 0",
     ))
     .fetch_all(pool)
     .await?;
     let mut n = 0usize;
-    for (id, email_opt, verified) in rows {
+    for (id, email_opt, email_enc, verified) in rows {
         if verified == 0 {
             continue;
         }
-        let email = email_opt.unwrap_or_default();
+        let email = match email_enc.as_deref() {
+            Some(enc) => match crate::crypto::open_email(enc) {
+                Ok(email) => email,
+                Err(e) => {
+                    tracing::error!(user_id = id, error = %e, "decrypt email_enc failed during institutional-email backfill");
+                    email_opt.unwrap_or_default()
+                }
+            },
+            None => email_opt.unwrap_or_default(),
+        };
         if !crate::email::is_institutional(&email) {
             continue;
         }
@@ -300,6 +330,11 @@ async fn backfill_institutional_email(pool: &crate::db::DbPool) -> anyhow::Resul
     Ok(n)
 }
 
+/// S-7 startup pass: encrypt the plaintext `email` column for any user row
+/// whose `email_hash` is still NULL. Returns the number of rows updated.
+/// Idempotent — running it twice does nothing the second time. Skips rows
+/// with an empty `email` because the app keeps the legacy plaintext column
+/// blank once `email_enc` is populated.
 async fn backfill_user_emails(pool: &crate::db::DbPool) -> anyhow::Result<usize> {
     let rows: Vec<(i64, Option<String>)> = sqlx::query_as(crate::db::pg(
         "SELECT id, email FROM users WHERE email_hash IS NULL",
@@ -324,5 +359,138 @@ async fn backfill_user_emails(pool: &crate::db::DbPool) -> anyhow::Result<usize>
         .await?;
         n += 1;
     }
+    Ok(n)
+}
+
+async fn backfill_legacy_totp(pool: &crate::db::DbPool) -> anyhow::Result<usize> {
+    let rows: Vec<(i64, Option<String>, i64)> = sqlx::query_as(crate::db::pg(
+        "SELECT id, totp_secret, totp_enabled FROM users
+          WHERE totp_enabled != 0
+            AND totp_secret IS NOT NULL
+            AND TRIM(totp_secret) <> ''",
+    ))
+    .fetch_all(pool)
+    .await?;
+    let mut n = 0usize;
+    for (user_id, secret_opt, enabled) in rows {
+        let Some(secret) = secret_opt
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let already_migrated: Option<(i64,)> =
+            sqlx::query_as(crate::db::pg("SELECT 1 FROM user_totp WHERE user_id = ?"))
+                .bind(user_id)
+                .fetch_optional(pool)
+                .await?;
+        if already_migrated.is_some() {
+            continue;
+        }
+        let secret_enc = crate::crypto::encrypt_blob(secret.as_bytes())?;
+        let enabled_at: Option<chrono::NaiveDateTime> = if enabled != 0 {
+            Some(chrono::Utc::now().naive_utc())
+        } else {
+            None
+        };
+        sqlx::query(crate::db::pg(
+            "INSERT INTO user_totp (user_id, secret, enabled_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(user_id) DO NOTHING",
+        ))
+        .bind(user_id)
+        .bind(&secret_enc)
+        .bind(enabled_at)
+        .execute(pool)
+        .await?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+async fn backfill_webhook_secrets(pool: &crate::db::DbPool) -> anyhow::Result<usize> {
+    let rows: Vec<(i64, String)> = sqlx::query_as(crate::db::pg(
+        "SELECT id, secret FROM webhooks
+          WHERE secret_enc IS NULL
+            AND secret IS NOT NULL
+            AND secret <> ''",
+    ))
+    .fetch_all(pool)
+    .await?;
+    let mut n = 0usize;
+    for (id, secret) in rows {
+        let secret_enc = crate::crypto::encrypt_blob(secret.as_bytes())?;
+        sqlx::query(crate::db::pg(
+            "UPDATE webhooks SET secret_enc = ? WHERE id = ?",
+        ))
+        .bind(&secret_enc)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+async fn scrub_legacy_secret_columns(pool: &crate::db::DbPool) -> anyhow::Result<usize> {
+    let mut n = 0usize;
+
+    n += sqlx::query(crate::db::pg(
+        "UPDATE users SET email = ''
+          WHERE email_enc IS NOT NULL AND email IS NOT NULL AND email <> ''",
+    ))
+    .execute(pool)
+    .await?
+    .rows_affected() as usize;
+
+    n += sqlx::query(crate::db::pg(
+        "UPDATE pending_email_changes SET new_email = ''
+          WHERE new_email_enc IS NOT NULL AND new_email IS NOT NULL AND new_email <> ''",
+    ))
+    .execute(pool)
+    .await?
+    .rows_affected() as usize;
+
+    n += sqlx::query(crate::db::pg(
+        "UPDATE users
+            SET email_verify_token = NULL,
+                email_verify_expires = NULL
+          WHERE email_verify_token IS NOT NULL
+             OR email_verify_expires IS NOT NULL",
+    ))
+    .execute(pool)
+    .await?
+    .rows_affected() as usize;
+
+    n += sqlx::query(crate::db::pg(
+        "UPDATE users
+            SET password_reset_token = NULL,
+                password_reset_expires = NULL
+          WHERE password_reset_token IS NOT NULL
+             OR password_reset_expires IS NOT NULL",
+    ))
+    .execute(pool)
+    .await?
+    .rows_affected() as usize;
+
+    n += sqlx::query(crate::db::pg(
+        "UPDATE users
+            SET totp_secret = NULL,
+                totp_enabled = 0
+          WHERE totp_secret IS NOT NULL
+             OR totp_enabled != 0",
+    ))
+    .execute(pool)
+    .await?
+    .rows_affected() as usize;
+
+    n += sqlx::query(crate::db::pg(
+        "UPDATE webhooks SET secret = ''
+          WHERE secret_enc IS NOT NULL AND secret IS NOT NULL AND secret <> ''",
+    ))
+    .execute(pool)
+    .await?
+    .rows_affected() as usize;
+
     Ok(n)
 }

@@ -129,8 +129,7 @@ Personal data on PreXiv falls into four categories. Treating them all the same w
 |---|---|---|---|
 | **Irrecoverable by design** | `users.password_hash` (bcrypt cost 10); `api_tokens.token_hash` (SHA-256 hex) | The plaintext is never persisted. Bcrypt hashes are intentionally slow one-way functions; SHA-256 of a 27-byte random token has no practical preimage. | **Stronger than encryption.** Encryption implies a key holder can recover the plaintext; coercing the operator or compromising the key gets that plaintext back. With irrecoverable hashes, *no one* can derive the original — not the operator, not a court order, not a database leaker. The user is the only one who ever knew the plaintext. |
 | **Intentionally public** | `users.username`, `display_name`, `affiliation`, `bio`, `orcid`; manuscript title/abstract/authors/conductor; comments; votes | Plaintext on disk and on the wire. | Public by user choice. The user filled in these fields *to be seen*; encrypting them would prevent the only legitimate use. |
-| **Encrypted at rest** | `users.email_enc` (login + verification), `pending_email_changes.new_email_enc`, `user_totp.secret` | Column-level **AES-256-GCM** with a server-side master key in `PREXIV_DATA_KEY` (32 random bytes, hex- or base64-encoded). Email lookup uses a deterministic 32-byte HMAC-SHA256 *blind index* `email_hash` so we can `WHERE email_hash = ?` without decrypting every row. Implementation: `rust/src/crypto.rs`; active schema in `rust/pg_migrations/0001_postgres_schema.sql`. | A DB dump alone yields ciphertext + opaque hashes. To reverse to a known email address or TOTP secret an attacker needs the master key, which lives only in the deployment env file (mode 0600). |
-| **Pending encryption** | Future webhook signing secrets, if webhooks are enabled in production | Not currently part of the main production product surface. | Use the same `crypto.rs` primitives before treating webhook secrets as production user data. |
+| **Encrypted at rest** | `users.email_enc` (login + verification), `pending_email_changes.new_email_enc`, `user_totp.secret`, `webhooks.secret_enc`, and one-shot session-secret wrappers such as just-minted token display state | Column-level **AES-256-GCM** with a server-side master key in `PREXIV_DATA_KEY` (32 random bytes, hex- or base64-encoded). Email lookup uses a deterministic 32-byte HMAC-SHA256 *blind index* `email_hash` so we can `WHERE email_hash = ?` without decrypting every row. Implementation: `rust/src/crypto.rs`; active schema in `rust/pg_migrations/0001_postgres_schema.sql` plus additive migrations. | A DB dump alone yields ciphertext + opaque hashes. To reverse to a known email address, TOTP secret, webhook signing secret, or encrypted one-shot session secret an attacker needs the master key, which lives only in the deployment env file (mode 0600). |
 | **Backup tarballs leaving the box** | The tar.gz stream that bundles the PostgreSQL dump + uploads, snapshotted before deploys and on cron schedules | Prefer **age-encrypted** X25519 public-key archives (`.tar.gz.age`). Small single-host deployments may use GPG symmetric AES256 with `PREXIV_BACKUP_PASSPHRASE_FILE` (`.tar.gz.gpg`). In production, `backup.sh` refuses plaintext unless explicitly overridden. | Backups are the most-portable copies of all user data: they get rsynced off-machine, sit in cron-driven archive directories, and may end up in places the live DB never goes. Encrypting *them* specifically defends the threat model where the box itself stays trusted but a backup copy gets out. |
 
 ### Key management for `PREXIV_DATA_KEY` (column-level encryption)
@@ -183,7 +182,7 @@ If neither age nor `PREXIV_BACKUP_PASSPHRASE_FILE` is configured, `backup.sh` fa
 
 ## 7. Code-level security audit — findings to date
 
-Audit run 2026-05-12 (re-audited same day). Grepped for known antipatterns; verified the high-risk surfaces.
+Audit run 2026-05-12 and re-audited through 2026-05-16. Grepped for known antipatterns; verified the high-risk surfaces.
 
 ### Findings
 
@@ -195,7 +194,7 @@ Audit run 2026-05-12 (re-audited same day). Grepped for known antipatterns; veri
 | **S-4.** Missing rate limiting in the Rust port | Medium (abuse-aid) | **FIXED** — `tower-governor` protects auth and public-write/API-write routes with per-IP token buckets |
 | **S-5.** No off-machine backup | High (durability) | **FIXED** — `scripts/offmachine-backup.sh` rsyncs encrypted snapshots to `$PREXIV_OFFMACHINE_DEST` after every `backup.sh`; see §6 |
 | **S-6.** Backup tarballs plaintext on disk | Medium (leakage) | **FIXED** — production backups must be age-encrypted or GPG-encrypted; plaintext requires an explicit override, see §6a |
-| **S-7.** Recoverable account secrets stored as plaintext | Medium (leakage) | **FIXED for email, pending email changes, and TOTP** — AES-256-GCM column-level encryption with HMAC-SHA256 blind index for email lookup; `rust/src/crypto.rs`, active PostgreSQL schema in `rust/pg_migrations/0001_postgres_schema.sql` |
+| **S-7.** Recoverable account secrets stored as plaintext | Medium (leakage) | **FIXED for email, pending email changes, TOTP, webhook signing secrets, and one-shot session secrets** — AES-256-GCM column-level encryption with HMAC-SHA256 blind index for email lookup; `rust/src/crypto.rs`, active PostgreSQL schema in `rust/pg_migrations/0001_postgres_schema.sql` plus additive migrations |
 | **S-8.** Session fixation: `login_session` did not rotate the session id, so a planted pre-login cookie remained valid post-login | High | **FIXED** — `auth.rs` now calls `session.cycle_id().await` before writing `user_id` |
 | **S-9.** PDF written to disk *before* CSRF check on `/submit` — a forged multipart POST left an orphan upload | High | **FIXED** — `routes/submit.rs` buffers the PDF in memory, validates CSRF + all fields, only then writes to disk |
 | **S-10.** User-enumeration: `/login` returned different messages for "no such user" vs "wrong password", and the no-such-user branch returned in microseconds vs bcrypt-time for wrong-password | Medium | **FIXED** — `verify_password_timing_safe` runs bcrypt against a fixed dummy hash when the user is missing; both branches return the same `"Incorrect username/email or password."` message |
@@ -205,6 +204,7 @@ Audit run 2026-05-12 (re-audited same day). Grepped for known antipatterns; veri
 | **S-14.** Latent open redirect: vote handler used the `Referer` header verbatim for its redirect target | Low | **FIXED** — `routes/votes.rs::safe_back_path` strips scheme+host and only accepts same-origin paths, with the same hardening rules as `sanitize_next` |
 | **S-15.** API token `last_used_at` was bumped before confirming the linked user still exists | Low | **FIXED** — `api_auth.rs::find_user_by_bearer` now updates `last_used_at` only after the user-row fetch succeeds |
 | **S-16.** API endpoints returned 200 OK for validation failures (`vote_manuscript`) and "no such token" (`revoke_token`) | Informational | **FIXED** — now 422 and 404 respectively, matching the rest of the API |
+| **S-17.** Bearer-token leakage risk through query strings/logs and opaque token rows | Medium (credential exposure) | **FIXED** — auth-required paths accept bearer tokens only in `Authorization`, query-token attempts are rejected, HTTP trace logs use path-only spans, token rows store a non-secret prefix for UI/audit display plus a one-way hash, and token mint/revoke audit entries never include plaintext |
 
 ### Verified clean
 
@@ -215,14 +215,14 @@ Audit run 2026-05-12 (re-audited same day). Grepped for known antipatterns; veri
 - **XSS in templates.** maud auto-escapes interpolated values. The only `PreEscaped` calls are for ammonia-sanitized markdown output, layout-static SVG, and explicit static HTML in `pages_content/*.html` (which is operator-authored, not user-supplied).
 - **Error response leakage.** `AppError::IntoResponse` maps every sqlx/anyhow error to a generic "Internal error" string; the full error is `tracing::error!`-logged server-side. No schema names, no row counts, no stack traces leak to the HTTP response.
 - **Password storage.** bcrypt cost 10, byte-identical format with the JS app's bcryptjs hashes. HIBP k-anonymity check on register and change-password.
-- **API token storage.** Plaintext is `prexiv_` + 36 base64url chars (27 random bytes of entropy). Stored as SHA-256 hex; the plaintext is shown to the caller exactly once at creation and never persisted.
+- **API token storage.** Plaintext is `prexiv_` + 36 base64url chars (27 random bytes of entropy). Stored as SHA-256 hex plus a short non-secret display prefix; the plaintext is shown to the caller exactly once at creation and never persisted. Bearer tokens are accepted only in the `Authorization` header, not URL query strings, and HTTP request logging avoids query strings.
 - **Authorization.** `RequireUser` / `RequireAdmin` extractors gate every private route. `/admin` and `/admin/audit` reject non-admins with 403. The `withdraw` endpoint verifies `viewer.id == submitter_id || viewer.is_admin()` before mutating.
 - **Static asset caching.** Versioned `/static` app assets use immutable long-lived cache headers. Uploaded manuscript artifacts use shorter cache headers so readers get reasonable performance without turning uploaded records into effectively permanent browser cache entries.
 - **Self-hosted UI dependencies.** The browser no longer depends on Google Fonts or jsDelivr for normal page rendering; Cormorant Garamond and KaTeX runtime/font assets are served from `/static/vendor`.
 
 ### Caveats
 
-- **Verified-only write policy is enforced.** Manuscript submission, revision, comment, vote, flag, follow, and API-token minting require an email-verified account in the Rust production path. Admins can bypass this for moderation/operational work.
+- **Verified-only write policy is enforced.** Manuscript submission, revision, comment, vote, flag, follow, and API-token minting require a GitHub OAuth, ORCID OAuth, or email-verified account in the Rust production path. Admins can bypass this for moderation/operational work.
 - **No advanced abuse-heuristic layer yet.** Rate limits cover auth, submit, comment, vote, flag, and API writes, but there is no shadow-banning, captcha for known-spam IPs, or submission-frequency dampening beyond those limits. Revisit when traffic grows.
 
 ## 8. Operator runbook

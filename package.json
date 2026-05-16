@@ -1,38 +1,16 @@
 {
-  "name": "pre-arxiv",
+  "name": "prexiv",
   "version": "0.1.0",
   "description": "PreXiv — a research manuscript archive with explicit AI-use provenance, hosted artifacts, version history, and optional human audit statements",
-  "main": "server.js",
-  "type": "commonjs",
+  "private": true,
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
-    "seed": "node seed.js",
-    "reset": "rm -f data/prearxiv.db data/prearxiv.db-shm data/prearxiv.db-wal data/prearxiv.seed.db data/sessions.db data/sessions.db-shm data/sessions.db-wal && node seed.js",
-    "test:api": "python3 tests/prexiv_api_test.py",
+    "start": "cd rust && cargo run --release",
+    "dev": "cd rust && cargo run",
+    "build": "cd rust && cargo build --release",
+    "test": "cd rust && cargo test",
+    "lint": "cd rust && cargo clippy --all-targets -- -D warnings",
+    "fmt:check": "cd rust && cargo fmt --check",
     "test:mcp": "python3 tests/prexiv_mcp_test.py",
-    "test:safety": "python3 tests/prexiv_safety_test.py",
-    "test:all": "python3 tests/prexiv_api_test.py & python3 tests/prexiv_mcp_test.py & python3 tests/prexiv_safety_test.py & wait",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^11.5.0",
-    "connect-sqlite3": "^0.9.15",
-    "ejs": "^3.1.10",
-    "express": "^4.21.2",
-    "express-rate-limit": "^8.5.1",
-    "express-session": "^1.18.1",
-    "helmet": "^8.1.0",
-    "marked": "^14.1.4",
-    "multer": "^2.1.1",
-    "pdf-parse": "^2.4.5",
-    "sanitize-html": "^2.13.1"
-  },
-  "devDependencies": {
-    "typescript": "^5.4.0"
-  },
-  "overrides": {
-    "sqlite3": "6.0.1"
+    "check": "npm run fmt:check && npm run test && npm run lint && npm run build && (cd mcp && npm run check)"
   }
 }

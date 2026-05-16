@@ -1,5 +1,6 @@
 //! Shared helpers for handlers: building `PageCtx`, flash messages.
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use tower_sessions::Session;
 
 use crate::auth::{csrf_token, MaybeUser};
@@ -7,6 +8,50 @@ use crate::state::AppState;
 use crate::templates::PageCtx;
 
 const SESSION_FLASH_KEY: &str = "flash";
+
+fn encrypted_session_key(key: &str) -> String {
+    format!("{key}_enc")
+}
+
+fn decrypt_session_secret(encoded: &str) -> Option<String> {
+    BASE64_STANDARD
+        .decode(encoded)
+        .ok()
+        .and_then(|blob| crate::crypto::decrypt_blob(&blob).ok())
+        .and_then(|plain| String::from_utf8(plain).ok())
+}
+
+pub async fn set_session_secret(session: &Session, key: &str, plaintext: &str) {
+    let enc_key = encrypted_session_key(key);
+    if let Ok(blob) = crate::crypto::encrypt_blob(plaintext.as_bytes()) {
+        let _ = session.insert(&enc_key, BASE64_STANDARD.encode(blob)).await;
+    }
+    let _ = session.remove::<String>(key).await;
+}
+
+pub async fn get_session_secret(session: &Session, key: &str) -> Option<String> {
+    let enc_key = encrypted_session_key(key);
+    if let Ok(Some(encoded)) = session.get::<String>(&enc_key).await {
+        return decrypt_session_secret(&encoded);
+    }
+    let legacy: Option<String> = session.get::<String>(key).await.ok().flatten();
+    if let Some(plaintext) = legacy.as_deref() {
+        set_session_secret(session, key, plaintext).await;
+    }
+    legacy
+}
+
+pub async fn take_session_secret(session: &Session, key: &str) -> Option<String> {
+    let value = get_session_secret(session, key).await;
+    clear_session_secret(session, key).await;
+    value
+}
+
+pub async fn clear_session_secret(session: &Session, key: &str) {
+    let enc_key = encrypted_session_key(key);
+    let _ = session.remove::<String>(&enc_key).await;
+    let _ = session.remove::<String>(key).await;
+}
 
 /// Read a one-shot flash message from the session — also clears it.
 pub async fn take_flash(session: &Session) -> Option<String> {
@@ -96,16 +141,9 @@ pub async fn build_ctx(
     // remain available if the user reloads or navigates between
     // unverified pages. Cleared by the /verify/{token} handler on
     // successful redeem.
-    let pending_verify_token: Option<String> = session
-        .get::<String>("pending_verify_token")
-        .await
-        .ok()
-        .flatten();
-    let pending_email_change_token: Option<String> = session
-        .get::<String>("pending_email_change_token")
-        .await
-        .ok()
-        .flatten();
+    let pending_verify_token = get_session_secret(session, "pending_verify_token").await;
+    let pending_email_change_token =
+        get_session_secret(session, "pending_email_change_token").await;
     PageCtx {
         user,
         csrf_token,

@@ -169,6 +169,7 @@ pub fn render(
                 table.kv {
                     tr {
                         th { "Name" }
+                        th { "Prefix" }
                         th { "Created" }
                         th { "Last used" }
                         th { "Expires" }
@@ -177,6 +178,13 @@ pub fn render(
                     @for t in tokens {
                         tr {
                             td { @if let Some(n) = &t.name { (n) } @else { em.muted { "(unnamed)" } } }
+                            td {
+                                @if let Some(prefix) = &t.token_prefix {
+                                    code { (prefix) "…" }
+                                } @else {
+                                    em.muted { "(legacy)" }
+                                }
+                            }
                             td { @if let Some(ts) = &t.created_at { (ts) } }
                             td { @if let Some(ts) = &t.last_used_at { (ts) } @else { em.muted { "never" } } }
                             td { @if let Some(ts) = &t.expires_at { (ts) } @else { em.muted { "never" } } }
@@ -202,11 +210,12 @@ pub fn render(
                 ", PreXiv generates 27 bytes of cryptographic randomness, encodes them in base64url, prefixes the result with "
                 code { "prexiv_" }
                 ", and hashes the whole string with SHA-256. The hash is stored in the database; the plaintext is held only long enough to render it on the success banner you just clicked through, then dropped from memory and the page."
+                " A short prefix is stored next to the hash so you can tell which row belongs to which client without exposing the usable token."
             }
             p {
                 "When a client sends "
                 code { "Authorization: Bearer prexiv_…" }
-                ", PreXiv hashes the value and looks up the hash. A match identifies the user; the request proceeds with their permissions. The token's "
+                ", PreXiv hashes the value and looks up the hash. Tokens in URL query strings are rejected because URLs leak into browser history, proxy logs, referrers, and screenshots. A hash match identifies the user; the request proceeds with their permissions. The token's "
                 em { "Last used" }
                 " timestamp is updated on every successful authentication so you can spot tokens that have gone quiet or, worse, gone noisy in someone else's hands."
             }

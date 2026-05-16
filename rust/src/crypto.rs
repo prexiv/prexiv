@@ -26,9 +26,11 @@
 //!
 //! ## What we encrypt
 //!
-//! For now, **email addresses only**. The infrastructure here is reusable
-//! for future fields (password-reset tokens, pending email change targets,
-//! webhook secret payloads) — `encrypt_blob`/`decrypt_blob` are agnostic.
+//! Current uses: account email addresses, pending email-change addresses,
+//! TOTP shared secrets, webhook signing secrets, and one-shot session secrets.
+//! Passwords and bearer/reset/verification tokens are not encrypted because
+//! they should not be recoverable; those are stored as password hashes or
+//! one-way token hashes instead.
 
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Key, Nonce};

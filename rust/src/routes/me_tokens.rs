@@ -6,15 +6,16 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use serde::Deserialize;
 use tower_sessions::Session;
 
-use crate::api_auth::{generate_token, hash_token};
+use crate::api_auth::{generate_token, hash_token, token_display_prefix};
 use crate::auth::{verify_csrf, MaybeUser, RequireUser};
 use crate::error::AppResult;
-use crate::helpers::{build_ctx, set_flash};
+use crate::helpers::{build_ctx, set_flash, set_session_secret, take_session_secret};
 use crate::state::AppState;
 use crate::templates;
 
 pub struct TokenRow {
     pub id: i64,
+    pub token_prefix: Option<String>,
     pub name: Option<String>,
     pub last_used_at: Option<chrono::NaiveDateTime>,
     pub created_at: Option<chrono::NaiveDateTime>,
@@ -27,26 +28,33 @@ pub async fn show(
     maybe_user: MaybeUser,
     RequireUser(user): RequireUser,
 ) -> AppResult<Html<String>> {
-    let rows: Vec<TokenRow> = sqlx::query_as::<_, (i64, Option<String>, Option<chrono::NaiveDateTime>, Option<chrono::NaiveDateTime>, Option<chrono::NaiveDateTime>)>(
-        crate::db::pg("SELECT id, name, last_used_at, created_at, expires_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC"),
+    let rows: Vec<TokenRow> = sqlx::query_as::<_, (i64, Option<String>, Option<String>, Option<chrono::NaiveDateTime>, Option<chrono::NaiveDateTime>, Option<chrono::NaiveDateTime>)>(
+        crate::db::pg("SELECT id, token_prefix, name, last_used_at, created_at, expires_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC"),
     )
     .bind(user.id)
     .fetch_all(&state.pool)
     .await?
     .into_iter()
-    .map(|(id, name, last_used_at, created_at, expires_at)| TokenRow {
-        id, name, last_used_at, created_at, expires_at,
+    .map(|(id, token_prefix, name, last_used_at, created_at, expires_at)| TokenRow {
+        id, token_prefix, name, last_used_at, created_at, expires_at,
     })
     .collect();
 
     let mut ctx = build_ctx(&session, maybe_user, "/me/tokens").await;
     ctx.no_index = true;
-    // Pull a one-shot plaintext token from the session (set by create()).
-    let just_minted: Option<(String, Option<String>)> = session
-        .remove::<(String, Option<String>)>("just_minted_token")
+    // Pull a one-shot token from the session (set by create()). The token
+    // itself is encrypted in the PostgreSQL-backed session store.
+    let token = take_session_secret(&session, "just_minted_token").await;
+    let token_name = session
+        .remove::<String>("just_minted_token_name")
         .await
         .ok()
-        .flatten();
+        .flatten()
+        .filter(|s| !s.is_empty());
+    let _ = session
+        .remove::<(String, Option<String>)>("just_minted_token")
+        .await;
+    let just_minted = token.map(|t| (t, token_name));
     let base = state.app_url.as_deref().unwrap_or("http://localhost:3001");
     Ok(Html(
         templates::me_tokens::render(
@@ -103,17 +111,34 @@ pub async fn create(
 
     let plain = generate_token();
     let hash = hash_token(&plain);
+    let prefix = token_display_prefix(&plain);
     sqlx::query(crate::db::pg(
-        "INSERT INTO api_tokens (user_id, token_hash, name, expires_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO api_tokens (user_id, token_hash, token_prefix, name, expires_at) VALUES (?, ?, ?, ?, ?)",
     ))
     .bind(user.id)
     .bind(&hash)
+    .bind(&prefix)
     .bind(name.as_deref())
     .bind(expires_at)
     .execute(&state.pool)
     .await?;
+    let _ = sqlx::query(crate::db::pg(
+        "INSERT INTO audit_log (actor_user_id, action, target_type, detail) VALUES (?, 'api_token_mint', 'api_token', ?)",
+    ))
+    .bind(user.id)
+    .bind(serde_json::json!({
+        "token_prefix": prefix,
+        "name": name.as_deref(),
+        "expires_at": expires_at,
+        "surface": "web"
+    }).to_string())
+    .execute(&state.pool)
+    .await;
 
-    let _ = session.insert("just_minted_token", (plain, name)).await;
+    set_session_secret(&session, "just_minted_token", &plain).await;
+    let _ = session
+        .insert("just_minted_token_name", name.clone().unwrap_or_default())
+        .await;
     Ok(Redirect::to("/me/tokens").into_response())
 }
 
@@ -133,13 +158,27 @@ pub async fn revoke(
         set_flash(&session, "Form expired — please try again.").await;
         return Ok(Redirect::to("/me/tokens").into_response());
     }
-    sqlx::query(crate::db::pg(
-        "DELETE FROM api_tokens WHERE id = ? AND user_id = ?",
+    let deleted: Option<(Option<String>, Option<String>)> = sqlx::query_as(crate::db::pg(
+        "DELETE FROM api_tokens WHERE id = ? AND user_id = ? RETURNING token_prefix, name",
     ))
     .bind(id)
     .bind(user.id)
-    .execute(&state.pool)
+    .fetch_optional(&state.pool)
     .await?;
+    if let Some((token_prefix, name)) = deleted {
+        let _ = sqlx::query(crate::db::pg(
+            "INSERT INTO audit_log (actor_user_id, action, target_type, target_id, detail) VALUES (?, 'api_token_revoke', 'api_token', ?, ?)",
+        ))
+        .bind(user.id)
+        .bind(id)
+        .bind(serde_json::json!({
+            "token_prefix": token_prefix,
+            "name": name,
+            "surface": "web"
+        }).to_string())
+        .execute(&state.pool)
+        .await;
+    }
     set_flash(&session, "Token revoked.").await;
     Ok(Redirect::to("/me/tokens").into_response())
 }

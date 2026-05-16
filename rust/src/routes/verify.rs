@@ -14,7 +14,7 @@ use tower_sessions::Session;
 
 use crate::auth::{verify_csrf, MaybeUser, RequireUser};
 use crate::error::AppResult;
-use crate::helpers::{build_ctx, set_flash};
+use crate::helpers::{build_ctx, clear_session_secret, set_flash, set_session_secret};
 use crate::state::AppState;
 use crate::templates::layout::layout;
 use crate::verify;
@@ -36,7 +36,7 @@ pub async fn show(
                     // points at a deleted row, and the verify banner
                     // shouldn't render on subsequent unverified-page
                     // visits (the user is now verified anyway).
-                    let _ = session.remove::<String>("pending_verify_token").await;
+                    clear_session_secret(&session, "pending_verify_token").await;
                     (
                         true,
                         "Email verified",
@@ -132,7 +132,7 @@ pub async fn resend(
     };
     if crate::email::inline_token_fallback_enabled() {
         if let Some(t) = pending_token {
-            let _ = session.insert("pending_verify_token", t).await;
+            set_session_secret(&session, "pending_verify_token", &t).await;
         }
     }
 

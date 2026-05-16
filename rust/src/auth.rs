@@ -16,7 +16,7 @@ use serde_json::json;
 use sha1::{Digest, Sha1};
 use tower_sessions::Session;
 
-use crate::api_auth::{extract_bearer, find_user_by_bearer, BearerToken};
+use crate::api_auth::{bearer_token_in_query, extract_bearer, find_user_by_bearer, BearerToken};
 use crate::models::User;
 use crate::state::AppState;
 
@@ -181,6 +181,17 @@ fn bearer_auth_error(message: &str) -> Response {
         .into_response()
 }
 
+fn bearer_url_error() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": "bearer tokens are not accepted in URLs",
+            "hint": "send `Authorization: Bearer prexiv_…`; never put an API token in a query string"
+        })),
+    )
+        .into_response()
+}
+
 /// Optional current user — extracted on every request. Use when the page
 /// renders differently for logged-in vs anonymous (most pages).
 pub struct MaybeUser(pub Option<User>);
@@ -244,6 +255,7 @@ where
                     "missing or malformed Authorization header",
                 ));
             }
+            BearerToken::Missing if bearer_token_in_query(parts) => return Err(bearer_url_error()),
             BearerToken::Missing => {}
         }
 

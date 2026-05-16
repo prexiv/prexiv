@@ -406,7 +406,7 @@ function buildServer() {
     {
       capabilities: { tools: {} },
       instructions:
-        'PreXiv is a community archive for manuscripts with explicit AI-use disclosure. ' +
+        'PreXiv is a research manuscript archive for manuscripts with explicit AI-use provenance. ' +
         'Read tools (search/browse/get/comments/categories) work without auth. ' +
         'Write tools (submit/revise/comment/vote) require PREXIV_TOKEN from an account verified through GitHub OAuth, ORCID OAuth, or email. ' +
         'Manuscript ids may be either numeric or the human-readable form `prexiv:YYMMDD.xxxxxx`. ' +

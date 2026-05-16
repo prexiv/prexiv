@@ -12,9 +12,9 @@ The product idea is simple:
 
 ## Current implementation
 
-The Rust app in [`rust/`](rust/) is the production path. The older Node.js app at the repository root remains as legacy/reference code while migration finishes, but new product work should target Rust.
+The Rust app in [`rust/`](rust/) is the only website implementation. It uses PostgreSQL through `sqlx` migrations in `rust/pg_migrations/`. The old root-level Node/SQLite prototype has been removed so local scripts, CI, and production all point at the same Rust/Postgres code path.
 
-The Rust production app uses PostgreSQL through `sqlx` migrations in `rust/pg_migrations/`. The legacy Node.js app keeps its historical SQLite tooling only for seed/reset compatibility and is not the production runtime.
+The only remaining Node package is the independent MCP bridge in [`mcp/`](mcp/), which exposes the Rust JSON API to MCP-capable agents. It is not a website runtime and does not use SQLite.
 
 ## Run locally
 
@@ -34,11 +34,13 @@ cargo run
 # http://localhost:3001
 ```
 
-Seed/demo data still comes from the legacy Node tooling:
+Equivalent root scripts are available for convenience:
 
 ```sh
-npm install
-npm run seed
+npm start          # Rust production path: cd rust && cargo run --release
+npm run dev        # Rust dev path: cd rust && cargo run
+npm run test       # Rust test suite
+npm run check      # fmt + tests + clippy + release build + MCP syntax check
 ```
 
 ## Configuration
@@ -46,7 +48,7 @@ npm run seed
 | Variable | Default | Purpose |
 |---|---:|---|
 | `DATABASE_URL` | required | PostgreSQL connection string for application tables and server-side sessions. |
-| `PREXIV_DATA_KEY` | required | 32-byte hex or base64 key for email encryption and email blind indexes. |
+| `PREXIV_DATA_KEY` | required | 32-byte hex or base64 key for email, pending-email, TOTP, webhook, and one-shot session-secret encryption, plus email blind indexes. |
 | `PORT` | `3001` direct / `3000` via deploy scripts | Rust HTTP port. Victoria's `scripts/start-rust.sh` defaults to `3000`. |
 | `DATA_DIR` | repo `data/` | Local runtime directory for non-database files. |
 | `UPLOAD_DIR` | repo `public/uploads/` | Stored public PDF/source artifacts. Use an external persistent path in production. |
@@ -294,7 +296,7 @@ The human-readable permissions page is `/permissions`.
 
 ## Agent API
 
-The JSON API lives at `/api/v1`. Public reads do not require a token. Public writes and token creation require `Authorization: Bearer prexiv_...` for an account verified through GitHub OAuth, ORCID OAuth, or email. `/api/v1/openapi.json` and `/api/v1/manifest` are available for agents, but the generated OpenAPI is intentionally compact and may lag a route or two; the route list below is the current product surface.
+The JSON API lives at `/api/v1`. Public reads do not require a token. Public writes and token creation require `Authorization: Bearer prexiv_...` for an account verified through GitHub OAuth, ORCID OAuth, or email. Bearer tokens are accepted only in the `Authorization` header, never in query strings. `/api/v1/openapi.json` and `/api/v1/manifest` are available for agents, but the generated OpenAPI is intentionally compact and may lag a route or two; the route list below is the current product surface.
 
 Agent support is delegated authority, not a separate actor class. Without a token, an agent can only read public pages and public read-only API endpoints. With a token, it can do what the token owner can do, subject to account verification, ownership checks, rate limits, and moderation. Tokens should be rotated and revoked like passwords.
 
@@ -316,14 +318,14 @@ GET    /api/v1/openapi.json
 GET    /api/v1/manifest
 ```
 
-Mint tokens at `/me/tokens` after account verification through GitHub OAuth, ORCID OAuth, or email. Plaintext tokens are shown once, stored only as SHA-256 hashes, and can be revoked immediately. A token is not a separate account: anyone holding it acts with the permissions of the user who minted it.
+Mint tokens at `/me/tokens` after account verification through GitHub OAuth, ORCID OAuth, or email. Plaintext tokens are shown once; the database stores only a SHA-256 hash plus a short non-secret prefix for UI/audit identification. Tokens can be revoked immediately. A token is not a separate account: anyone holding it acts with the permissions of the user who minted it.
 
 Website and JSON manuscript submission require a PreXiv-hosted LaTeX source or PDF. The website uses multipart upload; the JSON API accepts exactly one base64 artifact field: `source_base64` with `source_filename`, or `pdf_base64` with `pdf_filename`. `external_url` is optional and supplemental.
 
 ## Security posture
 
 - Passwords are bcrypt-hashed; registration checks Have I Been Pwned k-anonymity for breached passwords.
-- Email addresses, pending email-change addresses, and TOTP secrets are encrypted at rest with AES-256-GCM. Email lookup uses a keyed HMAC blind index.
+- Email addresses, pending email-change addresses, TOTP secrets, webhook signing secrets, and one-shot session secrets are encrypted at rest with AES-256-GCM. Email lookup uses a keyed HMAC blind index.
 - Sessions are PostgreSQL-backed, HTTP-only, SameSite=Lax, and Secure in production.
 - CSRF protection covers state-changing forms.
 - Public writes, auth attempts, comments, votes, flags, and API writes are rate-limited.
@@ -371,17 +373,6 @@ PORT=3000
 ```
 
 Keep `UPLOAD_DIR` outside the git checkout so deploys cannot delete user PDFs/source. Back up both PostgreSQL and `UPLOAD_DIR`. The bundled `scripts/deploy.sh` is for servers where the deployment copy is a real git checkout: it snapshots the database/uploads first with `scripts/backup.sh`, verifies the PostgreSQL dump catalog, fetches `origin/main`, resets the checkout to it, builds the Rust binary, restarts via `scripts/start-rust.sh`, and health-checks localhost. The `prexiv.net` host is currently updated by SSH/rsync to `/home/prexiv`, then server-side build/restart.
-
-## Legacy Node app
-
-The legacy app can still run on port 3000:
-
-```sh
-npm install
-npm start
-```
-
-Use it only for compatibility checks or seed/reset tooling. New features should be implemented in Rust.
 
 ## Status
 

@@ -68,7 +68,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
   "mcpServers": {
     "prexiv": {
       "command": "node",
-      "args": ["/Users/dbai/Documents/Research/pre-arxiv/mcp/server.js"],
+      "args": ["/Users/dbai/Documents/Research/prexiv/mcp/server.js"],
       "env": {
         "PREXIV_API_URL": "http://localhost:3000/api/v1",
         "PREXIV_TOKEN": "prexiv_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -95,7 +95,7 @@ process-level `PREXIV_TOKEN`.
 ### MCP Inspector (debugging)
 
 ```sh
-npx @modelcontextprotocol/inspector node /Users/dbai/Documents/Research/pre-arxiv/mcp/server.js
+npx @modelcontextprotocol/inspector node /Users/dbai/Documents/Research/prexiv/mcp/server.js
 ```
 
 ## Tools

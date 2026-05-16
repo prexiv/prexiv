@@ -239,11 +239,12 @@ pub async fn export(
     let tokens: Vec<(
         i64,
         Option<String>,
+        Option<String>,
         Option<chrono::NaiveDateTime>,
         Option<chrono::NaiveDateTime>,
         Option<chrono::NaiveDateTime>,
     )> = sqlx::query_as(crate::db::pg(
-        "SELECT id, name, last_used_at, created_at, expires_at
+        "SELECT id, token_prefix, name, last_used_at, created_at, expires_at
              FROM api_tokens WHERE user_id = ? ORDER BY id",
     ))
     .bind(user.id)
@@ -253,7 +254,7 @@ pub async fn export(
         .into_iter()
         .map(|t| {
             json!({
-                "id": t.0, "name": t.1, "last_used_at": t.2, "created_at": t.3, "expires_at": t.4,
+                "id": t.0, "token_prefix": t.1, "name": t.2, "last_used_at": t.3, "created_at": t.4, "expires_at": t.5,
             })
         })
         .collect();

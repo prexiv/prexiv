@@ -64,7 +64,7 @@ const BRAND_SVG: &str = r##"<svg viewBox="0 0 64 64" width="32" height="32" aria
 /// script change so the browser re-fetches instead of replaying its
 /// stale copy. (Bump format: yyyymmdd-letter — increments alphabetically
 /// for same-day re-deploys.)
-const ASSET_VER: &str = "20260516b";
+const ASSET_VER: &str = "20260516c";
 
 fn nav_class(current: &str, target: &str) -> &'static str {
     if current == target {

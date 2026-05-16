@@ -1,6 +1,6 @@
 # PreXiv Rust App
 
-`rust/` is the production PreXiv implementation. The legacy Node.js app remains in the repository for seed/reset tooling and compatibility checks, but new website work should be done here.
+`rust/` is the production PreXiv implementation and the only website runtime. The old root-level Node/SQLite prototype has been removed so development, CI, and production share the same Rust/PostgreSQL path. The separate `../mcp/` Node package remains as the optional MCP bridge for AI-agent clients.
 
 ## Run Locally
 
@@ -19,7 +19,7 @@ For full manuscript processing, install:
 - `pdflatex` or `latexmk` for LaTeX source compilation.
 - PostgreSQL 15+.
 
-`DATABASE_URL` is required for the PostgreSQL app database. `PREXIV_DATA_KEY` is required because user email addresses, pending email-change addresses, and TOTP secrets are encrypted at rest; email lookup uses a keyed HMAC blind index.
+`DATABASE_URL` is required for the PostgreSQL app database. `PREXIV_DATA_KEY` is required because user email addresses, pending email-change addresses, TOTP secrets, webhook signing secrets, and one-shot session secrets are encrypted at rest; email lookup uses a keyed HMAC blind index.
 
 ## Production Defaults
 
@@ -59,7 +59,7 @@ and DMARC links.
 | Templates | `maud` |
 | Sessions | `tower-sessions` + PostgreSQL store |
 | Markdown | `pulldown-cmark` + `ammonia` |
-| Email encryption | `crypto.rs` AES-256-GCM + HMAC blind index |
+| Sensitive data encryption | `crypto.rs` AES-256-GCM + HMAC blind index |
 | LaTeX compile | `compile.rs` |
 | PDF watermark | `pdf_watermark.rs` |
 | API bearer auth | `api_auth.rs` |
@@ -69,7 +69,6 @@ Main layout:
 ```text
 rust/
 ├── pg_migrations/    active PostgreSQL sqlx migrations
-├── migrations/       legacy SQLite migrations kept for reference
 ├── src/main.rs       env, middleware, static mounts, app startup
 ├── src/routes/       axum handlers
 ├── src/templates/    maud views
@@ -105,7 +104,7 @@ See the rendered `/permissions` page for user-facing text.
 - Logged-in unverified: manage account/security, revoke tokens, export/delete account; no public writes and no new tokens.
 - Account verified through GitHub OAuth, ORCID OAuth, or email: submit, revise own manuscripts, comment, vote, flag, follow, and mint API tokens.
 - Admin: moderation queue, audit log, operational revise/withdraw, and verification bypass for admin work.
-- API token: acts exactly as the user who minted it. Tokens do not currently have per-action scopes.
+- API token: acts exactly as the user who minted it. Plaintext is shown once; the DB stores only a one-way hash plus a short display prefix. Tokens do not currently have per-action scopes and are accepted only in the `Authorization` header.
 
 ## Agent API Notes
 
@@ -125,7 +124,7 @@ The OpenAPI output is intentionally compact and may be less detailed than the ro
 
 - Passwords are bcrypt hashes.
 - HIBP k-anonymity check rejects breached registration passwords.
-- Email, pending email changes, and TOTP secrets are encrypted at rest; email lookup uses keyed HMAC.
+- Email, pending email changes, TOTP secrets, webhook signing secrets, and one-shot session secrets are encrypted at rest; email lookup uses keyed HMAC.
 - CSRF is required on forms.
 - Rate limits protect auth and public write paths.
 - Uploaded PDFs are validated and watermarked before storage.

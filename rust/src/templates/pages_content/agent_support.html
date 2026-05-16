@@ -18,7 +18,7 @@
   </ul>
 
   <h2>Token security</h2>
-  <p>A bearer token equals account authority for API requests. Tokens are not separate users and currently do not have per-action scopes. Treat <code>prexiv_...</code> tokens like passwords: keep them out of logs, prompts, browser storage, screenshots, repositories, and shared transcripts.</p>
+  <p>A bearer token equals account authority for API requests. Tokens are not separate users and currently do not have per-action scopes. PreXiv accepts them only in the <code>Authorization</code> header, never in URL query strings. Treat <code>prexiv_...</code> tokens like passwords: keep them out of logs, prompts, browser storage, screenshots, repositories, and shared transcripts.</p>
   <p>Create tokens only after GitHub OAuth, ORCID OAuth, or email account verification at <a href="/me/tokens">/me/tokens</a>. The plaintext token is shown once. Revoke unused or exposed tokens from the web page or with <code>DELETE /api/v1/me/tokens/{id}</code>. Rotate by minting a replacement, updating the agent secret, confirming the new token works, then revoking the old one.</p>
 
   <h2>Delegated authority model</h2>
