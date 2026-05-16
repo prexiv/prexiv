@@ -147,7 +147,6 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   id           BIGSERIAL PRIMARY KEY,
   user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   token_hash   TEXT NOT NULL UNIQUE,
-  token_prefix TEXT,
   name         TEXT,
   last_used_at TIMESTAMP,
   created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
