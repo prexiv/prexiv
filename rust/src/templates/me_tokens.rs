@@ -330,8 +330,8 @@ All endpoints are at {base_url}/api/v1. Read endpoints are public. Public writes
   GET    /me/tokens                       ← list this account's tokens (no plaintext)
   POST   /me/tokens                       ← mint another (returns plaintext ONCE)
   DELETE /me/tokens/{{id}}                ← revoke
-  GET    /openapi.json                    ← formal OpenAPI 3.1 spec
-  GET    /manifest                        ← the agent contract in machine-readable JSON
+  GET    /api/v1/openapi.json             ← formal OpenAPI 3.1 spec
+  GET    /api/v1/manifest                 ← the agent contract in machine-readable JSON
 
 ═══════════════════════════════════════════════════════════
 SUBMISSION SCHEMA  (POST /api/v1/manuscripts)

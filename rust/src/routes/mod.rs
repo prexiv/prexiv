@@ -175,6 +175,12 @@ pub fn router() -> Router<AppState> {
         .route("/sitemap.xsl", get(feeds::sitemap_xsl))
         // OAI-PMH metadata-harvest endpoint (Dublin Core).
         .route("/oai", get(oai::oai))
+        // Agent discovery aliases. The canonical API paths remain
+        // /api/v1/openapi.json and /api/v1/manifest; these top-level
+        // aliases keep pasted agent briefings and documentation links
+        // from failing with a styled HTML 404.
+        .route("/openapi.json", get(api::openapi))
+        .route("/manifest", get(api::manifest))
 }
 
 /// POST endpoints subject to the strict auth-attempt rate limit.

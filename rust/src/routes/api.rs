@@ -1338,11 +1338,11 @@ async fn search(
 
 // ─── /openapi.json + /manifest ─────────────────────────────────────────────
 
-async fn openapi() -> Json<Value> {
+pub async fn openapi() -> Json<Value> {
     Json(openapi_spec())
 }
 
-async fn manifest() -> Json<Value> {
+pub async fn manifest() -> Json<Value> {
     Json(json!({
         "name": "PreXiv",
         "tagline": "agent-ready preprint server",
